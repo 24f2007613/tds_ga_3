@@ -152,6 +152,7 @@ async def verify(body: Dict[str, Any]):
 
 
 # ===== Q3: Resolve 12-Factor Config Precedence =====
+# 1. defaults (hardcoded)
 DEFAULT_CONFIG = {
     "port": 8000,
     "workers": 1,
@@ -160,6 +161,7 @@ DEFAULT_CONFIG = {
     "api_key": "default-secret-000",
 }
 
+# 2. config.development.yaml
 CONFIG_YAML = {
     "workers": 6,
 }
@@ -176,7 +178,7 @@ def load_config_layers() -> Dict[str, Any]:
     if app_api_key:
         cfg["api_key"] = app_api_key
 
-    # NUM_WORKERS alias from .env
+    # NUM_WORKERS alias from .env (if present, overrides YAML)
     num_workers = os.getenv("NUM_WORKERS")
     if num_workers:
         try:
@@ -184,7 +186,7 @@ def load_config_layers() -> Dict[str, Any]:
         except ValueError:
             pass
 
-    # OS env vars with APP_* prefix
+    # OS env vars with APP_* prefix (final env override layer)
     for key, value in os.environ.items():
         if key.startswith("APP_"):
             field = key[4:].lower()
@@ -211,14 +213,18 @@ def load_config_layers() -> Dict[str, Any]:
 def coerce_types(cfg: Dict[str, Any]) -> Dict[str, Any]:
     out = cfg.copy()
 
+    # port, workers -> int
     out["port"] = int(out.get("port", 8000))
     out["workers"] = int(out.get("workers", 1))
 
+    # debug -> bool (true/1/yes/on)
     raw_debug = str(out.get("debug", "false")).lower()
     out["debug"] = raw_debug in ("true", "1", "yes", "on")
 
+    # log_level -> string
     out["log_level"] = str(out.get("log_level", "info"))
 
+    # api_key masked always
     out["api_key"] = "****"
 
     return out
@@ -228,7 +234,7 @@ def coerce_types(cfg: Dict[str, Any]) -> Dict[str, Any]:
 async def effective_config(request: Request):
     cfg = load_config_layers()
 
-    # Read all ?set=key=value overrides from query params
+    # Read all ?set=key=value overrides from query params (CLI layer)
     set_params = request.query_params.getlist("set")
     for item in set_params:
         if "=" not in item:
@@ -260,73 +266,5 @@ async def effective_config(request: Request):
 
     # CORS: allow exam page to call this endpoint
     response = JSONResponse(content=final_cfg)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    return response
-
-
-# ===== Q5: POST Analytics Endpoint =====
-
-API_KEY = "ak_33h2xi1eu8vtosuib0g6ehoi"  # use YOUR assigned key from the exam page
-
-@app.options("/analytics")
-async def analytics_preflight():
-    response = Response(status_code=200)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
-    return response
-
-
-@app.post("/analytics")
-async def analytics(request: Request):
-    # Require the correct X-API-Key; wrong or missing key => 401
-    key = request.headers.get("X-API-Key")
-    if key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-    data: Dict[str, Any] = await request.json()
-    events: Any = data.get("events", [])
-    if not isinstance(events, list):
-        raise HTTPException(status_code=400, detail="Invalid events list")
-
-    total_events: int = len(events)
-
-    # Unique users
-    users: List[str] = [e.get("user") for e in events if "user" in e]
-    unique_users: int = len(set(users))
-
-    # Revenue: sum of positive amounts only, per-user totals for top_user
-    revenue: float = 0.0
-    per_user_amounts: Dict[str, float] = {}
-
-    for e in events:
-        user = e.get("user")
-        amount = e.get("amount", 0)
-
-        try:
-            amount = float(amount)
-        except (TypeError, ValueError):
-            continue
-
-        # Only count positive amounts as revenue
-        if amount > 0:
-            revenue += amount
-            if user is not None:
-                per_user_amounts[user] = per_user_amounts.get(user, 0.0) + amount
-
-    # Top user: highest positive total; grader guarantees no ties
-    top_user = None
-    if per_user_amounts:
-        top_user = max(per_user_amounts.items(), key=lambda kv: kv[1])[0]
-
-    result = {
-        "email": EMAIL,
-        "total_events": total_events,
-        "unique_users": unique_users,
-        "revenue": round(revenue, 4),
-        "top_user": top_user,
-    }
-
-    response = JSONResponse(content=result)
     response.headers["Access-Control-Allow-Origin"] = "*"
     return response
