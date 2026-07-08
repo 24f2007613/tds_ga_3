@@ -1,67 +1,82 @@
-from fastapi import FastAPI, Request, Response, HTTPException
 import time
 import uuid
-from typing import Optional
+from statistics import mean
+from typing import List, Optional
 
-ALLOWED_ORIGIN = "https://dash-t3xuf4.example.com"
+from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi.responses import JSONResponse
+
 EMAIL = "24f2007613@ds.study.iitm.ac.in"
+ALLOWED_ORIGIN = "https://dash-t3xuf4.example.com"
 
 app = FastAPI()
 
 
+# Middleware: add X-Request-ID and X-Process-Time on every response
 @app.middleware("http")
-async def add_request_id_and_timing(request: Request, call_next):
-    start = time.time()
+async def add_observability_headers(request: Request, call_next):
+    start = time.perf_counter()
     request_id = str(uuid.uuid4())
 
-    # Preflight for /stats
-    if request.method == "OPTIONS" and request.url.path == "/stats":
-        origin = request.headers.get("origin")
-        response = Response(status_code=200)
-        if origin == ALLOWED_ORIGIN:
-            response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
-            response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        response.headers["X-Request-ID"] = request_id
-        response.headers["X-Process-Time"] = f"{time.time() - start:.6f}"
-        return response
+    response: Response = await call_next(request)
 
-    # Normal request
-    response = await call_next(request)
-    origin = request.headers.get("origin")
-    if origin == ALLOWED_ORIGIN:
-        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
-
-    process_time = time.time() - start
+    process_time = time.perf_counter() - start
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Process-Time"] = f"{process_time:.6f}"
     return response
 
 
-@app.get("/stats")
-async def get_stats(values: Optional[str] = None):
-    if not values:
-        raise HTTPException(status_code=400, detail="values query parameter required")
+def set_origin_header(response: Response, origin: Optional[str]):
+    # Only your assigned allowed origin must receive ACAO; no wildcard
+    if origin == ALLOWED_ORIGIN:
+        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
 
+
+@app.options("/stats")
+async def stats_preflight(request: Request):
+    # CORS preflight handler
+    origin = request.headers.get("origin")
+    response = Response(status_code=200)
+
+    # Only echo ACAO for the allowed origin
+    if origin == ALLOWED_ORIGIN:
+        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+        response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+
+    # Middleware will still add X-Request-ID and X-Process-Time
+    return response
+
+
+@app.get("/stats")
+async def get_stats(values: str, request: Request):
+    origin = request.headers.get("origin")
+
+    # Parse comma-separated integers
     try:
-        nums = [int(v.strip()) for v in values.split(",") if v.strip()]
+        nums: List[int] = [int(x) for x in values.split(",") if x.strip() != ""]
     except ValueError:
-        raise HTTPException(status_code=400, detail="values must be comma-separated integers")
+        raise HTTPException(status_code=400, detail="Invalid integer in values")
 
     if not nums:
-        raise HTTPException(status_code=400, detail="no numbers provided")
+        raise HTTPException(status_code=400, detail="No values provided")
 
     count = len(nums)
     total = sum(nums)
     min_val = min(nums)
     max_val = max(nums)
-    mean_val = total / count
+    avg = mean(nums)  # true mean
 
-    return {
+    result = {
         "email": EMAIL,
         "count": count,
         "sum": total,
         "min": min_val,
         "max": max_val,
-        "mean": round(mean_val, 4)
+        # mean within ±0.01 of true value
+        "mean": round(avg, 4),
     }
+
+    response = JSONResponse(content=result)
+    set_origin_header(response, origin)
+    return response
