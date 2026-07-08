@@ -152,7 +152,6 @@ async def verify(body: Dict[str, Any]):
 
 
 # ========== Q3: Resolve 12-Factor Config Precedence ==========
-# Assigned layers (from exam):
 # 1. defaults (hardcoded)
 DEFAULT_CONFIG = {
     "port": 8000,
@@ -162,13 +161,10 @@ DEFAULT_CONFIG = {
     "api_key": "default-secret-000",
 }
 
-# 2. config.development.yaml -> workers: 6
+# 2. config.development.yaml
 CONFIG_YAML = {
     "workers": 6,
 }
-
-# 3. .env file -> APP_API_KEY=key-7nbh42ur3z
-# 4. OS env vars (APP_*), e.g. APP_WORKERS=1
 
 
 def load_config_layers() -> Dict[str, Any]:
@@ -178,13 +174,12 @@ def load_config_layers() -> Dict[str, Any]:
     # config.development.yaml layer
     cfg.update(CONFIG_YAML)
 
-    # .env layer (simulate by reading env vars starting with APP_)
-    # APP_API_KEY -> api_key
+    # .env layer (simulate with env vars)
     app_api_key = os.getenv("APP_API_KEY")
     if app_api_key:
         cfg["api_key"] = app_api_key
 
-    # NUM_WORKERS alias from .env (if present)
+    # NUM_WORKERS alias from .env
     num_workers = os.getenv("NUM_WORKERS")
     if num_workers:
         try:
@@ -195,7 +190,6 @@ def load_config_layers() -> Dict[str, Any]:
     # OS env vars with APP_* prefix
     for key, value in os.environ.items():
         if key.startswith("APP_"):
-            # APP_PORT -> port, APP_WORKERS -> workers, etc.
             field = key[4:].lower()
             if field == "api_key":
                 cfg["api_key"] = value
@@ -238,12 +232,13 @@ def coerce_types(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.get("/effective-config")
-async def effective_config(set: List[str] = []):
+async def effective_config(request: Request):
     # Merge four layers: defaults -> yaml -> .env -> OS env
     cfg = load_config_layers()
 
-    # Apply CLI overrides: ?set=key=value (highest precedence)
-    for item in set:
+    # Read all ?set=key=value overrides from query params
+    set_params = request.query_params.getlist("set")
+    for item in set_params:
         if "=" not in item:
             continue
         key, value = item.split("=", 1)
@@ -271,7 +266,6 @@ async def effective_config(set: List[str] = []):
 
     final_cfg = coerce_types(cfg)
     return final_cfg
-
 
 # ========== Q5: POST Analytics Endpoint ==========
 API_KEY = "ak_33h2xi1eu8vtosuib0g6ehoi"
