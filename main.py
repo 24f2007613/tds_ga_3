@@ -10,12 +10,12 @@ from fastapi.responses import JSONResponse
 from jose import jwt, JWTError
 
 
-# ========== Common ==========
 EMAIL = "24f2007613@ds.study.iitm.ac.in"
 
 app = FastAPI()
 
 
+# ===== Common middleware: all endpoints =====
 @app.middleware("http")
 async def add_observability_headers(request: Request, call_next):
     start = time.perf_counter()
@@ -29,7 +29,7 @@ async def add_observability_headers(request: Request, call_next):
     return response
 
 
-# ========== Q1: CORS-Aware Metrics API ==========
+# ===== Q1: CORS-Aware Metrics API =====
 ALLOWED_ORIGIN_Q1 = "https://dash-t3xuf4.example.com"
 
 
@@ -83,7 +83,7 @@ async def get_stats(values: str, request: Request):
     return response
 
 
-# ========== Q2: OAuth 2.0 / OIDC Token Verification ==========
+# ===== Q2: OAuth 2.0 / OIDC Token Verification =====
 ISSUER = "https://idp.exam.local"
 AUDIENCE = "tds-mz0olf8p.apps.exam.local"
 
@@ -151,8 +151,7 @@ async def verify(body: Dict[str, Any]):
     }
 
 
-# ========== Q3: Resolve 12-Factor Config Precedence ==========
-# 1. defaults (hardcoded)
+# ===== Q3: Resolve 12-Factor Config Precedence =====
 DEFAULT_CONFIG = {
     "port": 8000,
     "workers": 1,
@@ -161,20 +160,18 @@ DEFAULT_CONFIG = {
     "api_key": "default-secret-000",
 }
 
-# 2. config.development.yaml
 CONFIG_YAML = {
     "workers": 6,
 }
 
 
 def load_config_layers() -> Dict[str, Any]:
-    # Start from defaults
     cfg = DEFAULT_CONFIG.copy()
 
     # config.development.yaml layer
     cfg.update(CONFIG_YAML)
 
-    # .env layer (simulate with env vars)
+    # .env layer via env vars
     app_api_key = os.getenv("APP_API_KEY")
     if app_api_key:
         cfg["api_key"] = app_api_key
@@ -214,18 +211,14 @@ def load_config_layers() -> Dict[str, Any]:
 def coerce_types(cfg: Dict[str, Any]) -> Dict[str, Any]:
     out = cfg.copy()
 
-    # port, workers -> int
     out["port"] = int(out.get("port", 8000))
     out["workers"] = int(out.get("workers", 1))
 
-    # debug -> bool (true/1/yes/on)
     raw_debug = str(out.get("debug", "false")).lower()
     out["debug"] = raw_debug in ("true", "1", "yes", "on")
 
-    # log_level -> string
     out["log_level"] = str(out.get("log_level", "info"))
 
-    # api_key masked always
     out["api_key"] = "****"
 
     return out
@@ -233,7 +226,6 @@ def coerce_types(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/effective-config")
 async def effective_config(request: Request):
-    # Merge four layers: defaults -> yaml -> .env -> OS env
     cfg = load_config_layers()
 
     # Read all ?set=key=value overrides from query params
@@ -265,15 +257,19 @@ async def effective_config(request: Request):
             cfg[key] = value
 
     final_cfg = coerce_types(cfg)
-    return final_cfg
 
-# ========== Q5: POST Analytics Endpoint ==========
+    # CORS: allow exam page to call this endpoint
+    response = JSONResponse(content=final_cfg)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
+
+
+# ===== Q5: POST Analytics Endpoint =====
 API_KEY = "ak_33h2xi1eu8vtosuib0g6ehoi"
 
 
 @app.options("/analytics")
 async def analytics_preflight():
-    # Allow CORS from anywhere (simplest: wildcard)
     response = Response(status_code=200)
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
@@ -283,7 +279,6 @@ async def analytics_preflight():
 
 @app.post("/analytics")
 async def analytics(request: Request):
-    # Auth: require X-API-Key header
     key = request.headers.get("X-API-Key")
     if key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
@@ -295,13 +290,11 @@ async def analytics(request: Request):
 
     total_events = len(events)
 
-    # Unique users
     users = [e.get("user") for e in events if "user" in e]
     unique_users = len(set(users))
 
-    # Revenue: sum of positive amounts only
     revenue = 0.0
-    per_user_amounts = {}
+    per_user_amounts: Dict[str, float] = {}
 
     for e in events:
         user = e.get("user")
@@ -311,12 +304,12 @@ async def analytics(request: Request):
         except (TypeError, ValueError):
             continue
 
+        # Only positive amounts count as revenue
         if amount > 0:
             revenue += amount
             if user is not None:
                 per_user_amounts[user] = per_user_amounts.get(user, 0.0) + amount
 
-    # Top user: highest positive total; grader guarantees no ties
     top_user = None
     if per_user_amounts:
         top_user = max(per_user_amounts.items(), key=lambda kv: kv[1])[0]
@@ -330,6 +323,5 @@ async def analytics(request: Request):
     }
 
     response = JSONResponse(content=result)
-    # CORS: allow cross-origin from exam page (wildcard acceptable here)
     response.headers["Access-Control-Allow-Origin"] = "*"
     return response
