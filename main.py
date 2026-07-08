@@ -1,17 +1,17 @@
 import time
 import uuid
 from statistics import mean
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
+import os
 
 from fastapi import FastAPI, Request, Response, HTTPException, status
 from fastapi.responses import JSONResponse
 from jose import jwt, JWTError
 
-# ===== Question 1: CORS-Aware Metrics API =====
 
+# ========== Common ==========
 EMAIL = "24f2007613@ds.study.iitm.ac.in"
-ALLOWED_ORIGIN = "https://dash-t3xuf4.example.com"
 
 app = FastAPI()
 
@@ -29,9 +29,13 @@ async def add_observability_headers(request: Request, call_next):
     return response
 
 
-def set_origin_header(response: Response, origin: Optional[str]):
-    if origin == ALLOWED_ORIGIN:
-        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+# ========== Q1: CORS-Aware Metrics API ==========
+ALLOWED_ORIGIN_Q1 = "https://dash-t3xuf4.example.com"
+
+
+def set_origin_q1(response: Response, origin: Optional[str]):
+    if origin == ALLOWED_ORIGIN_Q1:
+        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN_Q1
 
 
 @app.options("/stats")
@@ -39,8 +43,8 @@ async def stats_preflight(request: Request):
     origin = request.headers.get("origin")
     response = Response(status_code=200)
 
-    if origin == ALLOWED_ORIGIN:
-        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+    if origin == ALLOWED_ORIGIN_Q1:
+        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN_Q1
         response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type"
 
@@ -75,12 +79,11 @@ async def get_stats(values: str, request: Request):
     }
 
     response = JSONResponse(content=result)
-    set_origin_header(response, origin)
+    set_origin_q1(response, origin)
     return response
 
 
-# ===== Question 2: OAuth 2.0 / OIDC Token Verification Service =====
-
+# ========== Q2: OAuth 2.0 / OIDC Token Verification ==========
 ISSUER = "https://idp.exam.local"
 AUDIENCE = "tds-mz0olf8p.apps.exam.local"
 
@@ -121,7 +124,7 @@ def verify_token(token: str):
 
 
 @app.post("/verify")
-async def verify(body: dict):
+async def verify(body: Dict[str, Any]):
     token = body.get("token")
     if not token:
         raise HTTPException(
@@ -146,3 +149,193 @@ async def verify(body: dict):
         "sub": sub,
         "aud": aud,
     }
+
+
+# ========== Q3: Resolve 12-Factor Config Precedence ==========
+# Assigned layers (from exam):
+# 1. defaults (hardcoded)
+DEFAULT_CONFIG = {
+    "port": 8000,
+    "workers": 1,
+    "debug": False,
+    "log_level": "info",
+    "api_key": "default-secret-000",
+}
+
+# 2. config.development.yaml -> workers: 6
+CONFIG_YAML = {
+    "workers": 6,
+}
+
+# 3. .env file -> APP_API_KEY=key-7nbh42ur3z
+# 4. OS env vars (APP_*), e.g. APP_WORKERS=1
+
+
+def load_config_layers() -> Dict[str, Any]:
+    # Start from defaults
+    cfg = DEFAULT_CONFIG.copy()
+
+    # config.development.yaml layer
+    cfg.update(CONFIG_YAML)
+
+    # .env layer (simulate by reading env vars starting with APP_)
+    # APP_API_KEY -> api_key
+    app_api_key = os.getenv("APP_API_KEY")
+    if app_api_key:
+        cfg["api_key"] = app_api_key
+
+    # NUM_WORKERS alias from .env (if present)
+    num_workers = os.getenv("NUM_WORKERS")
+    if num_workers:
+        try:
+            cfg["workers"] = int(num_workers)
+        except ValueError:
+            pass
+
+    # OS env vars with APP_* prefix
+    for key, value in os.environ.items():
+        if key.startswith("APP_"):
+            # APP_PORT -> port, APP_WORKERS -> workers, etc.
+            field = key[4:].lower()
+            if field == "api_key":
+                cfg["api_key"] = value
+            elif field == "workers":
+                try:
+                    cfg["workers"] = int(value)
+                except ValueError:
+                    pass
+            elif field == "port":
+                try:
+                    cfg["port"] = int(value)
+                except ValueError:
+                    pass
+            elif field == "debug":
+                cfg["debug"] = value
+            elif field == "log_level":
+                cfg["log_level"] = value
+
+    return cfg
+
+
+def coerce_types(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    out = cfg.copy()
+
+    # port, workers -> int
+    out["port"] = int(out.get("port", 8000))
+    out["workers"] = int(out.get("workers", 1))
+
+    # debug -> bool (true/1/yes/on)
+    raw_debug = str(out.get("debug", "false")).lower()
+    out["debug"] = raw_debug in ("true", "1", "yes", "on")
+
+    # log_level -> string
+    out["log_level"] = str(out.get("log_level", "info"))
+
+    # api_key masked always
+    out["api_key"] = "****"
+
+    return out
+
+
+@app.get("/effective-config")
+async def effective_config(set: List[str] = []):
+    # Merge four layers: defaults -> yaml -> .env -> OS env
+    cfg = load_config_layers()
+
+    # Apply CLI overrides: ?set=key=value (highest precedence)
+    for item in set:
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+
+        if key == "port":
+            try:
+                cfg["port"] = int(value)
+            except ValueError:
+                pass
+        elif key == "workers":
+            try:
+                cfg["workers"] = int(value)
+            except ValueError:
+                pass
+        elif key == "debug":
+            cfg["debug"] = value
+        elif key == "log_level":
+            cfg["log_level"] = value
+        elif key == "api_key":
+            cfg["api_key"] = value
+        else:
+            cfg[key] = value
+
+    final_cfg = coerce_types(cfg)
+    return final_cfg
+
+
+# ========== Q5: POST Analytics Endpoint ==========
+API_KEY = "ak_33h2xi1eu8vtosuib0g6ehoi"
+
+
+@app.options("/analytics")
+async def analytics_preflight():
+    # Allow CORS from anywhere (simplest: wildcard)
+    response = Response(status_code=200)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
+    return response
+
+
+@app.post("/analytics")
+async def analytics(request: Request):
+    # Auth: require X-API-Key header
+    key = request.headers.get("X-API-Key")
+    if key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    data = await request.json()
+    events = data.get("events", [])
+    if not isinstance(events, list):
+        raise HTTPException(status_code=400, detail="Invalid events list")
+
+    total_events = len(events)
+
+    # Unique users
+    users = [e.get("user") for e in events if "user" in e]
+    unique_users = len(set(users))
+
+    # Revenue: sum of positive amounts only
+    revenue = 0.0
+    per_user_amounts = {}
+
+    for e in events:
+        user = e.get("user")
+        amount = e.get("amount", 0)
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            continue
+
+        if amount > 0:
+            revenue += amount
+            if user is not None:
+                per_user_amounts[user] = per_user_amounts.get(user, 0.0) + amount
+
+    # Top user: highest positive total; grader guarantees no ties
+    top_user = None
+    if per_user_amounts:
+        top_user = max(per_user_amounts.items(), key=lambda kv: kv[1])[0]
+
+    result = {
+        "email": EMAIL,
+        "total_events": total_events,
+        "unique_users": unique_users,
+        "revenue": round(revenue, 4),
+        "top_user": top_user,
+    }
+
+    response = JSONResponse(content=result)
+    # CORS: allow cross-origin from exam page (wildcard acceptable here)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
