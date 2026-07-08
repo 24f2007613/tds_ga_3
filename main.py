@@ -3,7 +3,6 @@ import uuid
 from statistics import mean
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
-import os
 
 from fastapi import FastAPI, Request, Response, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -166,6 +165,16 @@ CONFIG_YAML = {
     "workers": 6,
 }
 
+# 3. .env file layer (simulated — your assigned value)
+ENV_FILE_VARS = {
+    "api_key": "key-7nbh42ur3z",
+}
+
+# 4. OS env vars with APP_* prefix (simulated — your assigned value)
+OS_ENV_VARS = {
+    "workers": 1,
+}
+
 
 def load_config_layers() -> Dict[str, Any]:
     cfg = DEFAULT_CONFIG.copy()
@@ -173,39 +182,11 @@ def load_config_layers() -> Dict[str, Any]:
     # config.development.yaml layer
     cfg.update(CONFIG_YAML)
 
-    # .env layer via env vars
-    app_api_key = os.getenv("APP_API_KEY")
-    if app_api_key:
-        cfg["api_key"] = app_api_key
+    # .env layer (simulated assigned value)
+    cfg["api_key"] = ENV_FILE_VARS["api_key"]
 
-    # NUM_WORKERS alias from .env (if present, overrides YAML)
-    num_workers = os.getenv("NUM_WORKERS")
-    if num_workers:
-        try:
-            cfg["workers"] = int(num_workers)
-        except ValueError:
-            pass
-
-    # OS env vars with APP_* prefix (final env override layer)
-    for key, value in os.environ.items():
-        if key.startswith("APP_"):
-            field = key[4:].lower()
-            if field == "api_key":
-                cfg["api_key"] = value
-            elif field == "workers":
-                try:
-                    cfg["workers"] = int(value)
-                except ValueError:
-                    pass
-            elif field == "port":
-                try:
-                    cfg["port"] = int(value)
-                except ValueError:
-                    pass
-            elif field == "debug":
-                cfg["debug"] = value
-            elif field == "log_level":
-                cfg["log_level"] = value
+    # OS env vars with APP_* prefix (simulated assigned value) — overrides YAML's workers
+    cfg.update(OS_ENV_VARS)
 
     return cfg
 
@@ -234,7 +215,7 @@ def coerce_types(cfg: Dict[str, Any]) -> Dict[str, Any]:
 async def effective_config(request: Request):
     cfg = load_config_layers()
 
-    # Read all ?set=key=value overrides from query params (CLI layer)
+    # Read all ?set=key=value overrides from query params (CLI layer — highest precedence)
     set_params = request.query_params.getlist("set")
     for item in set_params:
         if "=" not in item:
